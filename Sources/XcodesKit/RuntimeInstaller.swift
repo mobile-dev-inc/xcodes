@@ -317,6 +317,8 @@ public class RuntimeInstaller {
                 let stdErrPipe = Pipe()
                 process.standardError = stdErrPipe
 
+                var stderrOutput = ""
+
                 let observer = NotificationCenter.default.addObserver(
                     forName: .NSFileHandleDataAvailable,
                     object: nil,
@@ -331,6 +333,9 @@ public class RuntimeInstaller {
                     defer { handle.waitForDataInBackgroundAndNotify() }
 
                     let string = String(decoding: handle.availableData, as: UTF8.self)
+                    if handle === stdErrPipe.fileHandleForReading {
+                        stderrOutput += string
+                    }
                     progress.updateFromXcodebuild(text: string)
                     continuation.yield(progress)
                 }
@@ -354,12 +359,11 @@ public class RuntimeInstaller {
                 NotificationCenter.default.removeObserver(observer, name: .NSFileHandleDataAvailable, object: nil)
 
                 guard process.terminationReason == .exit, process.terminationStatus == 0 else {
-                    let errorOutput = String(decoding: stdErrPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
                     struct ProcessExecutionError: Swift.Error, LocalizedError {
                         let output: String
                         var errorDescription: String? { "xcodebuild failed: \(output.trimmingCharacters(in: .whitespacesAndNewlines))" }
                     }
-                    continuation.finish(throwing: ProcessExecutionError(output: errorOutput))
+                    continuation.finish(throwing: ProcessExecutionError(output: stderrOutput))
                     return
                 }
                 continuation.finish()
