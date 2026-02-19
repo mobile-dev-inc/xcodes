@@ -131,7 +131,11 @@ public class RuntimeInstaller {
 
     private func getMatchingRuntime(identifier: String) async throws -> DownloadableRuntime {
         let downloadables = try await runtimeList.downloadableRuntimes().downloadables
-        guard let runtime = downloadables.first(where: { $0.visibleIdentifier == identifier || $0.simulatorVersion.buildUpdate == identifier }) else {
+        guard let runtime = downloadables.first(where: { runtime in
+            runtime.visibleIdentifier == identifier ||
+            runtime.simulatorVersion.buildUpdate == identifier ||
+            runtime.platform.shortName + " " + runtime.completeVersion == identifier
+        }) else {
             throw Error.unavailableRuntime(identifier)
         }
         return runtime
@@ -248,9 +252,10 @@ public class RuntimeInstaller {
         // Observe the progress and update the console from it
         for try await progress in downloadStream {
             let formatter = NumberFormatter(numberStyle: .percent)
-            guard Current.shell.isatty() else { return }
-            // These escape codes move up a line and then clear to the end
-            Current.logging.log("\u{1B}[1A\u{1B}[KDownloading Runtime \(runtime.visibleIdentifier): \(formatter.string(from: progress.fractionCompleted)!)")
+            if Current.shell.isatty() {
+                // These escape codes move up a line and then clear to the end
+                Current.logging.log("\u{1B}[1A\u{1B}[KDownloading Runtime \(runtime.visibleIdentifier): \(formatter.string(from: progress.fractionCompleted)!)")
+            }
         }
     }
 
@@ -281,6 +286,11 @@ public class RuntimeInstaller {
     private func createXcodebuildDownloadStream(runtime: DownloadableRuntime) -> AsyncThrowingStream<Progress, Swift.Error> {
         let platform = runtime.platform.shortName
         let version = runtime.simulatorVersion.buildUpdate
+        #if arch(arm64)
+        let archVariant = "arm64"
+        #else
+        let archVariant = "x86_64"
+        #endif
 
         return AsyncThrowingStream<Progress, Swift.Error> { continuation in
             Task {
@@ -297,7 +307,9 @@ public class RuntimeInstaller {
                     "-downloadPlatform",
                     "\(platform)",
                     "-buildVersion",
-                    "\(version)"
+                    "\(version)",
+                    "-architectureVariant",
+                    archVariant
                 ]
 
                 let stdOutPipe = Pipe()
@@ -342,8 +354,12 @@ public class RuntimeInstaller {
                 NotificationCenter.default.removeObserver(observer, name: .NSFileHandleDataAvailable, object: nil)
 
                 guard process.terminationReason == .exit, process.terminationStatus == 0 else {
-                    struct ProcessExecutionError: Swift.Error {}
-                    continuation.finish(throwing: ProcessExecutionError())
+                    let errorOutput = String(decoding: stdErrPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                    struct ProcessExecutionError: Swift.Error, LocalizedError {
+                        let output: String
+                        var errorDescription: String? { "xcodebuild failed: \(output.trimmingCharacters(in: .whitespacesAndNewlines))" }
+                    }
+                    continuation.finish(throwing: ProcessExecutionError(output: errorOutput))
                     return
                 }
                 continuation.finish()
