@@ -246,31 +246,20 @@ public class RuntimeInstaller {
         // Make sure that we are using a version of xcode that supports this
         try await ensureSelectedXcodeVersionForDownload()
 
+        // Only pass -architectureVariant for runtimes that have multiple architectures
+        // (e.g. iOS 26+ multi-arch runtimes). Older runtimes have a nil `architectures`
+        // field and fail with "not available for download" when the flag is supplied.
         #if arch(arm64)
-        let archVariant: String? = "arm64"
+        let archVariant: String? = runtime.architectures != nil ? "arm64" : nil
         #else
-        let archVariant: String? = "x86_64"
+        let archVariant: String? = runtime.architectures != nil ? "x86_64" : nil
         #endif
 
-        do {
-            let downloadStream = createXcodebuildDownloadStream(runtime: runtime, architectureVariant: archVariant)
-            for try await progress in downloadStream {
-                let formatter = NumberFormatter(numberStyle: .percent)
-                if Current.shell.isatty() {
-                    Current.logging.log("\u{1B}[1A\u{1B}[KDownloading Runtime \(runtime.visibleIdentifier): \(formatter.string(from: progress.fractionCompleted)!)")
-                }
-            }
-        } catch {
-            // Some runtimes (e.g. iOS 18.x arm64Only on macOS 26 / Xcode 26.x) are
-            // rejected by xcodebuild when an architecture variant is specified, even
-            // though they can still be downloaded without it. Retry without the flag.
-            Current.logging.log("Retrying download without architecture variant")
-            let fallbackStream = createXcodebuildDownloadStream(runtime: runtime, architectureVariant: nil)
-            for try await progress in fallbackStream {
-                let formatter = NumberFormatter(numberStyle: .percent)
-                if Current.shell.isatty() {
-                    Current.logging.log("\u{1B}[1A\u{1B}[KDownloading Runtime \(runtime.visibleIdentifier): \(formatter.string(from: progress.fractionCompleted)!)")
-                }
+        let downloadStream = createXcodebuildDownloadStream(runtime: runtime, architectureVariant: archVariant)
+        for try await progress in downloadStream {
+            let formatter = NumberFormatter(numberStyle: .percent)
+            if Current.shell.isatty() {
+                Current.logging.log("\u{1B}[1A\u{1B}[KDownloading Runtime \(runtime.visibleIdentifier): \(formatter.string(from: progress.fractionCompleted)!)")
             }
         }
     }
