@@ -246,15 +246,31 @@ public class RuntimeInstaller {
         // Make sure that we are using a version of xcode that supports this
         try await ensureSelectedXcodeVersionForDownload()
 
-        // Kick off the download/install process and get an async stream of the progress
-        let downloadStream = createXcodebuildDownloadStream(runtime: runtime)
+        #if arch(arm64)
+        let archVariant: String? = "arm64"
+        #else
+        let archVariant: String? = "x86_64"
+        #endif
 
-        // Observe the progress and update the console from it
-        for try await progress in downloadStream {
-            let formatter = NumberFormatter(numberStyle: .percent)
-            if Current.shell.isatty() {
-                // These escape codes move up a line and then clear to the end
-                Current.logging.log("\u{1B}[1A\u{1B}[KDownloading Runtime \(runtime.visibleIdentifier): \(formatter.string(from: progress.fractionCompleted)!)")
+        do {
+            let downloadStream = createXcodebuildDownloadStream(runtime: runtime, architectureVariant: archVariant)
+            for try await progress in downloadStream {
+                let formatter = NumberFormatter(numberStyle: .percent)
+                if Current.shell.isatty() {
+                    Current.logging.log("\u{1B}[1A\u{1B}[KDownloading Runtime \(runtime.visibleIdentifier): \(formatter.string(from: progress.fractionCompleted)!)")
+                }
+            }
+        } catch {
+            // Some runtimes (e.g. iOS 18.x arm64Only on macOS 26 / Xcode 26.x) are
+            // rejected by xcodebuild when an architecture variant is specified, even
+            // though they can still be downloaded without it. Retry without the flag.
+            Current.logging.log("Retrying download without architecture variant")
+            let fallbackStream = createXcodebuildDownloadStream(runtime: runtime, architectureVariant: nil)
+            for try await progress in fallbackStream {
+                let formatter = NumberFormatter(numberStyle: .percent)
+                if Current.shell.isatty() {
+                    Current.logging.log("\u{1B}[1A\u{1B}[KDownloading Runtime \(runtime.visibleIdentifier): \(formatter.string(from: progress.fractionCompleted)!)")
+                }
             }
         }
     }
@@ -283,14 +299,9 @@ public class RuntimeInstaller {
     }
 
     // Creates and invokes the xcodebuild install command and converts it to a stream of Progress
-    private func createXcodebuildDownloadStream(runtime: DownloadableRuntime) -> AsyncThrowingStream<Progress, Swift.Error> {
+    private func createXcodebuildDownloadStream(runtime: DownloadableRuntime, architectureVariant: String?) -> AsyncThrowingStream<Progress, Swift.Error> {
         let platform = runtime.platform.shortName
         let version = runtime.simulatorVersion.buildUpdate
-        #if arch(arm64)
-        let archVariant = "arm64"
-        #else
-        let archVariant = "x86_64"
-        #endif
 
         return AsyncThrowingStream<Progress, Swift.Error> { continuation in
             Task {
@@ -303,14 +314,11 @@ public class RuntimeInstaller {
                 let xcodeBuildPath = Path.root.usr.bin.join("xcodebuild").url
 
                 process.executableURL = xcodeBuildPath
-                process.arguments = [
-                    "-downloadPlatform",
-                    "\(platform)",
-                    "-buildVersion",
-                    "\(version)",
-                    "-architectureVariant",
-                    archVariant
-                ]
+                var arguments = ["-downloadPlatform", "\(platform)", "-buildVersion", "\(version)"]
+                if let archVariant = architectureVariant {
+                    arguments += ["-architectureVariant", archVariant]
+                }
+                process.arguments = arguments
 
                 let stdOutPipe = Pipe()
                 process.standardOutput = stdOutPipe
