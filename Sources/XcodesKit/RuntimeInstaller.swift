@@ -315,6 +315,7 @@ public class RuntimeInstaller {
                 process.standardError = stdErrPipe
 
                 var stderrOutput = ""
+                var stdoutOutput = ""
 
                 let observer = NotificationCenter.default.addObserver(
                     forName: .NSFileHandleDataAvailable,
@@ -332,6 +333,8 @@ public class RuntimeInstaller {
                     let string = String(decoding: handle.availableData, as: UTF8.self)
                     if handle === stdErrPipe.fileHandleForReading {
                         stderrOutput += string
+                    } else {
+                        stdoutOutput += string
                     }
                     progress.updateFromXcodebuild(text: string)
                     continuation.yield(progress)
@@ -353,6 +356,12 @@ public class RuntimeInstaller {
 
                 process.waitUntilExit()
 
+                // Drain any remaining output not yet captured by the notification handlers.
+                // This also avoids a race condition where waitUntilExit() returns before
+                // the last NSFileHandleDataAvailable notifications have been dispatched.
+                stdoutOutput += String(decoding: stdOutPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                stderrOutput += String(decoding: stdErrPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+
                 NotificationCenter.default.removeObserver(observer, name: .NSFileHandleDataAvailable, object: nil)
 
                 guard process.terminationReason == .exit, process.terminationStatus == 0 else {
@@ -360,7 +369,10 @@ public class RuntimeInstaller {
                         let output: String
                         var errorDescription: String? { "xcodebuild failed: \(output.trimmingCharacters(in: .whitespacesAndNewlines))" }
                     }
-                    continuation.finish(throwing: ProcessExecutionError(output: stderrOutput))
+                    // xcodebuild sometimes writes errors to stdout instead of stderr,
+                    // so fall back to stdout output when stderr is empty.
+                    let errorOutput = stderrOutput.isEmpty ? stdoutOutput : stderrOutput
+                    continuation.finish(throwing: ProcessExecutionError(output: errorOutput))
                     return
                 }
                 continuation.finish()
