@@ -365,13 +365,20 @@ public class RuntimeInstaller {
                 NotificationCenter.default.removeObserver(observer, name: .NSFileHandleDataAvailable, object: nil)
 
                 guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+                    // xcodebuild sometimes writes errors to stdout instead of stderr,
+                    // so fall back to stdout output when stderr is empty.
+                    let errorOutput = stderrOutput.isEmpty ? stdoutOutput : stderrOutput
+
+                    // xcodebuild exits non-zero when the runtime is already downloaded — treat as success.
+                    if errorOutput.contains("is already downloaded") {
+                        continuation.finish()
+                        return
+                    }
+
                     struct ProcessExecutionError: Swift.Error, LocalizedError {
                         let output: String
                         var errorDescription: String? { "xcodebuild failed: \(output.trimmingCharacters(in: .whitespacesAndNewlines))" }
                     }
-                    // xcodebuild sometimes writes errors to stdout instead of stderr,
-                    // so fall back to stdout output when stderr is empty.
-                    let errorOutput = stderrOutput.isEmpty ? stdoutOutput : stderrOutput
                     continuation.finish(throwing: ProcessExecutionError(output: errorOutput))
                     return
                 }
